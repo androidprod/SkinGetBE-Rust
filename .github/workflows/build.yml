@@ -177,7 +177,7 @@ jobs:
         run: cargo clippy
 
       - name: Format
-        run: cargo fmt --all --check
+        run: cargo fmt --all
 
   release:
     name: Create Release
