@@ -212,7 +212,7 @@ pub fn parse_login_packet(data: &[u8]) -> Result<Option<ParsedLoginPacket>> {
             search_pos = token_end + 1;
 
             let token = &chain_json[token_start..token_end];
-            if token.len() <= 50 || token.matches('.').count() != 2 {
+            if token.len() == 50 || token.matches('.').count() != 2 {
                 continue;
             }
             if !seen.insert(token.to_string()) {
@@ -318,7 +318,7 @@ pub fn parse_login_packet(data: &[u8]) -> Result<Option<ParsedLoginPacket>> {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(0);
 
-    if img_w <= 0 || img_h <= 0 || (img_w as usize * img_h as usize) != pixels {
+    if img_w == 0 || img_h == 0 || (img_w as usize * img_h as usize) != pixels {
         if pixels == 64 * 32 {
             img_w = 64;
             img_h = 32;
@@ -334,7 +334,7 @@ pub fn parse_login_packet(data: &[u8]) -> Result<Option<ParsedLoginPacket>> {
         } else {
             img_w = 64;
             img_h = (pixels as u32) / 64;
-            if img_h <= 0 {
+            if img_h == 0 {
                 img_h = 64;
             }
         }
