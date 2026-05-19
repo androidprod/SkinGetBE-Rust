@@ -177,7 +177,7 @@ jobs:
         run: cargo clippy
 
       - name: Format
-        run: cargo fmt --all
+        run: cargo fmt --all --check
 
   release:
     name: Create Release
@@ -192,6 +192,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          fetch-depth: 0
           path: artifacts
 
       - name: Prepare release files
