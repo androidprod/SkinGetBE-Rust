@@ -1,5 +1,5 @@
-/// Build script for SkinGetBE
-/// Handles Windows resource compilation and icon embedding
+//! Build script for SkinGetBE
+//! Handles Windows resource compilation and icon embedding
 
 fn main() {
     #[cfg(target_os = "windows")]
