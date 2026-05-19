@@ -68,7 +68,7 @@ impl SkinExtractor {
             // Try to infer from available data
             let width = 64u32;
             let mut height = (pixels as u32) / width;
-            if height <= 0 {
+            if height == 0 {
                 height = 64;
             }
             (width, height)
