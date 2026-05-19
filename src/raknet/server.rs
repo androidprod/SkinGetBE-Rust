@@ -448,8 +448,14 @@ impl RakNetServer {
 
         // Build MOTD string using configured MOTD and omit max_players field
         let motd_string = format!(
-            "MCPE;{};{};{};0;100;{};SkinGetBE;Creative;1;{};{};",
-            motd_title, proto, ver, guid_str, port_str, port_str
+            "MCPE;{};{};{};0;100;{};{};Creative;1;{};{};",
+            motd_title,
+            proto,
+            ver,
+            guid_str,
+            guid_str,
+            port_str,
+            port_str
         );
 
         // Write MOTD with length prefix (Big Endian ushort to match C++ Buffer::writeShort)
