@@ -1,88 +1,70 @@
-name: Build
+name: Release
 
 on:
-  push:
-    branches:
-      - main
-      - develop
-
-  pull_request:
-    branches:
-      - main
-      - develop
-
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag (e.g. v0.2.0)'
+        description: "Release tag (e.g. v0.2.0)"
         required: true
 
       release_title:
-        description: 'Release title'
+        description: "Release title"
         required: false
-        default: ''
+        default: ""
 
-      pre_release:
-        description: 'Pre-release'
+      prerelease:
+        description: "Pre-release"
         required: true
         type: boolean
         default: false
 
       draft:
-        description: 'Draft release'
+        description: "Draft release"
         required: true
         type: boolean
         default: false
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
-  RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build ${{ matrix.os_name }}-${{ matrix.arch }}
+    name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
+
       matrix:
         include:
-          # Windows x64
-          - os: windows-latest
-            os_name: windows
-            arch: x64
+          - name: windows-x64
+            os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: skingetbe.exe
             asset: SkinGetBE_windows_x64.zip
 
-          # Linux x64
-          - os: ubuntu-latest
-            os_name: linux
-            arch: x64
+          - name: linux-x64
+            os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: skingetbe
             asset: SkinGetBE_linux_x64.tar.gz
 
-          # Linux arm64
-          - os: ubuntu-latest
-            os_name: linux
-            arch: arm64
+          - name: linux-arm64
+            os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             binary: skingetbe
             asset: SkinGetBE_linux_arm64.tar.gz
 
-          # macOS x64
-          - os: macos-13
-            os_name: macos
-            arch: x64
-            target: x86_64-apple-darwin
-            binary: skingetbe
-            asset: SkinGetBE_macos_x64.tar.gz
-
-          # macOS arm64
-          - os: macos-latest
-            os_name: macos
-            arch: arm64
+          - name: macos-arm64
+            os: macos-latest
             target: aarch64-apple-darwin
             binary: skingetbe
             asset: SkinGetBE_macos_arm64.tar.gz
@@ -103,40 +85,37 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # Linux arm64 cross
       - name: Install cross
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build with cross
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Standard build
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            cross build --release --target "${{ matrix.target }}"
+          else
+            cargo build --release --target "${{ matrix.target }}"
+          fi
 
       - name: Verify binary
         shell: bash
         run: |
           FILE="target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
-          if [ ! -f "$FILE" ]; then
-            echo "Binary missing: $FILE"
-            exit 1
-          fi
+          test -f "$FILE"
 
           ls -lh "$FILE"
 
       - name: Strip binary
         if: runner.os != 'Windows'
         continue-on-error: true
+        shell: bash
         run: |
-          strip target/${{ matrix.target }}/release/${{ matrix.binary }} || true
+          strip "target/${{ matrix.target }}/release/${{ matrix.binary }}" || true
 
-      # Package Windows
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: powershell
@@ -151,9 +130,9 @@ jobs:
             -Path dist/* `
             -DestinationPath "${{ matrix.asset }}"
 
-      # Package Unix
       - name: Package Unix
         if: runner.os != 'Windows'
+        shell: bash
         run: |
           mkdir -p dist
 
@@ -193,50 +172,49 @@ jobs:
         run: cargo test --verbose
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy
 
       - name: Format
         run: cargo fmt -- --check
 
   release:
-    name: Release
-    runs-on: ubuntu-latest
+    name: Create Release
 
     needs:
       - build
       - test
 
-    if: github.event_name == 'workflow_dispatch'
-
-    permissions:
-      contents: write
+    runs-on: ubuntu-latest
 
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: release-assets
+          path: artifacts
 
-      - name: Flatten artifacts
+      - name: Prepare release files
+        shell: bash
         run: |
-          mkdir final
+          mkdir release
 
-          find release-assets -type f | while read file; do
-            cp "$file" final/
+          find artifacts -type f | while read file; do
+            cp "$file" release/
           done
 
-          ls -lah final
+          ls -lah release
 
       - name: Create tag
+        shell: bash
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
 
           git tag "${{ github.event.inputs.release_tag }}"
           git push origin "${{ github.event.inputs.release_tag }}"
 
-      - name: Generate release name
-        id: rel
+      - name: Generate release title
+        id: meta
+        shell: bash
         run: |
           TITLE="${{ github.event.inputs.release_title }}"
 
@@ -246,16 +224,16 @@ jobs:
 
           echo "title=$TITLE" >> $GITHUB_OUTPUT
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
-          name: ${{ steps.rel.outputs.title }}
+          name: ${{ steps.meta.outputs.title }}
           draft: ${{ github.event.inputs.draft }}
-          prerelease: ${{ github.event.inputs.pre_release }}
+          prerelease: ${{ github.event.inputs.prerelease }}
 
           files: |
-            final/*
+            release/*
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
