@@ -2,14 +2,11 @@
 //!
 //! This module provides:
 //! - UDP socket abstraction
-//! - Connection management
 //! - Packet handling
 //! - Async I/O operations
 
-pub mod connection;
 pub mod udp;
 
-pub use connection::Connection;
 pub use udp::UdpSocket;
 
 /// Network configuration
@@ -17,8 +14,6 @@ pub use udp::UdpSocket;
 pub struct NetworkConfig {
     pub bind_addr: String,
     pub bind_port: u16,
-    pub max_packet_size: usize,
-    pub timeout_ms: u64,
 }
 
 impl Default for NetworkConfig {
@@ -26,8 +21,6 @@ impl Default for NetworkConfig {
         Self {
             bind_addr: "0.0.0.0".to_string(),
             bind_port: 19132,
-            max_packet_size: 65535,
-            timeout_ms: 5000,
         }
     }
 }
@@ -64,15 +57,6 @@ impl Network {
             .as_ref()
             .ok_or(crate::error::Error::Other("Socket not bound".to_string()))?;
         socket.recv_from(buffer).await
-    }
-
-    /// Send data to the UDP socket
-    pub async fn send_to(&self, data: &[u8], addr: std::net::SocketAddr) -> crate::Result<usize> {
-        let socket = self
-            .socket
-            .as_ref()
-            .ok_or(crate::error::Error::Other("Socket not bound".to_string()))?;
-        socket.send_to(data, addr).await
     }
 
     /// Get reference to the underlying socket

@@ -5,14 +5,11 @@
 
 pub mod batch;
 pub mod login;
-pub mod packets;
 pub mod responses;
 pub mod skin;
 pub mod version;
 
 pub use batch::{compress_batch, decompress_batch, parse_batch};
-pub use login::LoginData;
-pub use packets::Packets;
 pub use responses::*;
 pub use skin::SkinExtractor;
 pub use version::{

@@ -54,7 +54,7 @@ impl ConfigManager {
     }
 
     /// Load configuration from file (or create default)
-    pub async fn load(&self) -> Result<Config> {
+    pub fn load(&self) -> Result<Config> {
         // Create parent directory if needed
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)?;
@@ -68,7 +68,7 @@ impl ConfigManager {
             let mut config: Config = serde_json::from_str(&stripped)?;
             let normalized = Self::normalize_supported_version(&config);
             if normalized != config {
-                self.save(&normalized).await?;
+                self.save(&normalized)?;
                 config = normalized;
             }
             Ok(config)
@@ -76,13 +76,13 @@ impl ConfigManager {
             // Create default config
             info!("Creating default config at: {}", self.config_path.display());
             let config = Config::default();
-            self.save(&config).await?;
+            self.save(&config)?;
             Ok(config)
         }
     }
 
     /// Save configuration to file
-    pub async fn save(&self, config: &Config) -> Result<()> {
+    pub fn save(&self, config: &Config) -> Result<()> {
         // Create parent directory if needed
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)?;
@@ -92,14 +92,6 @@ impl ConfigManager {
         fs::write(&self.config_path, content)?;
         info!("Config saved to: {}", self.config_path.display());
         Ok(())
-    }
-
-    /// Print configuration info
-    pub fn print_info(&self, config: &Config) {
-        info!("Version:    {}", config.version);
-        info!("Protocol:   {}", config.protocol);
-        info!("Port:       {}", config.port);
-        info!("Address:    {}:{}", config.bind_addr, config.port);
     }
 
     fn normalize_supported_version(config: &Config) -> Config {

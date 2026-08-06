@@ -25,27 +25,3 @@ pub mod packet_id {
     pub const ACK: u8 = 0xc0;
     pub const NACK: u8 = 0xa0;
 }
-
-/// Server info structure (helper, similar to C++ ServerInfo)
-#[derive(Debug, Clone)]
-pub struct ServerInfo {
-    pub motd: String,
-    pub sub_motd: String,
-    pub protocol: i32,
-    pub version: String,
-    pub players: i32,
-    pub guid: u64,
-}
-
-impl Default for ServerInfo {
-    fn default() -> Self {
-        Self {
-            motd: "SkinGetBE Research Server".to_string(),
-            sub_motd: "C++ Implementation".to_string(),
-            protocol: 662,
-            version: "1.20.70".to_string(),
-            players: 0,
-            guid: 1234567890u64,
-        }
-    }
-}

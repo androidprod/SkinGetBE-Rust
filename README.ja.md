@@ -4,13 +4,13 @@
 
 # SkinGetBE - Rust Edition
 
-**Minecraft Bedrock Edition プレイヤーのスキンを、RakNet + Bedrock プロトコルの自前実装で自動取得する高性能 Rust 版ツール**
+**Minecraft Bedrock Edition プレイヤーのスキンを、RakNet + Bedrock プロトコルの自前実装で自動取得する高性能 Rust ツール**
 
 [![Rust Edition](https://img.shields.io/badge/Edition-Rust-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 [![Async Runtime](https://img.shields.io/badge/Runtime-Tokio-blue?style=flat-square)](https://tokio.rs/)
-[![Platform](https://img.shields.io/badge/Platform-Win%20%7C%20Linux%20%7C%20macOS%20%7C%20WASM-lightgrey?style=flat-square)](#ビルド方法)
-[![Protocol](https://img.shields.io/badge/Bedrock%20Protocol-Dynamic%20Version-green?style=flat-square)](#設定)
+[![Platform](https://img.shields.io/badge/Platform-Win%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)](#ビルド方法)
+[![Protocol](https://img.shields.io/badge/Bedrock%20Protocol-Dynamic-green?style=flat-square)](#設定)
 
 [English](README.md) | **日本語**
 
@@ -20,15 +20,15 @@
 
 ## 概要
 
-**SkinGetBE Rust Edition** は、元の C++ 実装を完全に Rust で再構築したバージョンです。Minecraft Bedrock Edition（BE）の通信スタックを一から実装し、接続してきたクライアントからスキン画像（PNG）を自動的に取得・保存します。
+**SkinGetBE** は、Minecraft Bedrock Edition（BE）の通信スタックを一から実装しています。生の UDP ソケット → RakNet ハンドシェイク → Bedrock Login パケット解析までを処理し、接続してきたクライアントのスキン画像を PNG と JSON メタデータ（サイドカー）のペアで自動保存します。
 
 Rust 版の特徴：
-- **パフォーマンス**: Tokio の async/await で数千の並行接続を効率的に処理
-- **メモリ安全性**: Rust のメモリモデルにより、バッファオーバーフロー等のバグを根本的に排除
-- **クロスプラットフォーム**: Windows・Linux・macOS・WASM を同一コードベースでサポート
-- **保守性**: モダンな非同期設計で、スケーラブルで読みやすいコード
+- **パフォーマンス**: Tokio の async/await に加え、バックグラウンドの再送・輻輳制御ワーカーが信頼性保証フレームの再送を処理
+- **メモリ安全性**: Rust の所有権システムと型システムにより、バッファオーバーフローや use-after-free を根本的に排除
+- **クロスプラットフォーム**: Windows・Linux・macOS を単一コードベースでビルド可能
+- **保守性**: `bedrock`・`raknet`・`network`・`crypto`・`util` に分割されたモジュール設計
 
-> ⚠️ **注意**: 本プロジェクトは非公式かつ研究・技術検証目的のツールです。商用利用・公開サーバーへの展開は推奨しません。利用は自己責任でお願いします。
+> ⚠️ **注意**: 本ツールは非公式かつ研究・技術検証目的のものです。完全なゲームサーバーではなく、商用利用・公開サーバーへの展開は推奨しません。利用は自己責任でお願いします。
 
 ---
 
@@ -38,45 +38,41 @@ Rust 版の特徴：
 
 | カテゴリ | 機能 |
 |----------|------|
-| **RakNet** | Unconnected Ping/Pong（MOTD 付き） |
+| **RakNet** | Unconnected Ping/Pong（バージョン文字列付き MOTD） |
 | | Open Connection Request/Reply 1 & 2 |
 | | Connection Request / Connection Request Accepted |
 | | Connected Ping/Pong |
-| | Frame Set Packet 解析 |
-| | ACK/NAK 送信 |
-| **Bedrock** | `Login` パケット受信・解析（複数フォーマット対応） |
+| | Frame Set パケット解析・信頼性保証フレームの分割 |
+| | ACK/NAK 処理、再送・輻輳制御 |
+| **Bedrock** | `Login` パケット受信・解析（複数フォーマット対応、新しめのプレビュー版プロトコルも対応） |
 | | zlib raw deflate 解凍 |
 | | JWT トークン解析（チェーンデータ抽出） |
 | | Skin データ デコード（Base64 → RGBA） |
-| **スキン抽出** | JWT チェーンからプレイヤー名取得 |
-| | Skin Data（Base64 RGBA）抽出 |
+| | クライアントへの `NetworkSettings` 応答送信 |
+| **スキン抽出** | JWT チェーンからプレイヤー名取得（xname / ThirdPartyName / displayName） |
+| | Skin データ（Base64 RGBA）抽出 |
 | | 画像サイズ自動判定（64×32, 64×64, 128×64, 128×128） |
-| | PNG ファイル生成・出力 |
-| | 重複ファイル名の自動連番処理 |
-| **インフラ** | Tokio 非同期ランタイムで並行接続処理 |
-| | セッション管理（クライアントごとに独立した状態） |
-| | STUN による外部 IP 発見（プレースホルダ） |
-| | Tracing フレームワークの構造化ログ |
-| | `config.json` によるバージョン・プロトコル設定 |
+| | `skins/` への PNG 生成・出力 |
+| | JSON メタデータ サイドカー（`{player}_{skinId}.json`） |
+| | 保存モード: 無効 / 上書き / 重複時の自動連番 |
+| **インフラ** | Tokio 非同期ランタイムによる並行接続処理 |
+| | クライアントごとのセッション状態管理 |
+| | STUN による外部 IP 発見 |
+| | C++ スタイルのカラー出力ログ（tracing フレームワーク） |
+| | プロトコル→バージョン対応表＋未知/新規プロトコルの自動フォールバック |
+| | `config.jsonc`（コメント対応 JSONC）による設定 |
+| | clap ベース CLI、Windows 形式 `/flag` 引数対応 |
 | **ビルド** | Cargo でのクロスプラットフォームビルド |
-| | Windows icon 埋め込み（build.rs） |
-| | GitHub Actions：Win/Linux/macOS クロスコンパイル |
-
-### 🟡 部分実装
-
-| 機能 | 状態 |
-|------|------|
-| STUN 発見の実装 | プレースホルダ（実装準備完了） |
-| Main loop パケット受信 | 骨組み完成、接続ハンドラ実装待機中 |
-| Cape（マント）画像抽出 | パース準備完了、保存機能未実装 |
+| | Windows アイコン埋め込み（`build.rs` + `winres`） |
 
 ### 🔲 未実装（予定）
 
 | 機能 | 備考 |
 |------|------|
+| 暗号化通信対応 | Xbox Live オンラインセッションに必要 |
+| Cape（マント）画像抽出 | 追加の Bedrock パケット処理が必要 |
 | Geometry JSON 保存 | スキン形状・アニメーションデータ |
-| 暗号化通信対応 | Xbox Live 接続時に必要 |
-| サーバー永続化 | セッション保存機能 |
+| 完全なゲームサーバー機能 | スキン抽出のみ。取得後はクライアントを切断 |
 
 ---
 
@@ -87,16 +83,19 @@ Rust 版の特徴：
         │
         ▼
 [RakNet ハンドシェイク]
-  Ping → Pong (MOTD)
+  Unconnected Ping → Pong (MOTD + バージョン)
   OCR1 → OCReply1
   OCR2 → OCReply2
   ConnectionRequest → ConnectionRequestAccepted
+  （信頼性保証フレーム、ACK/NAK + 再送）
         │
         ▼
-[Bedrock ログイン]
+[Bedrock レイヤー]
+  NetworkSettings 要求 → NetworkSettings 応答（zlib）
   Login パケット受信（zlib 圧縮）
-  Chain Data (JWT) → プレイヤー名抽出
-  Skin Data (JWT) → Base64 RGBA → PNG → skins/ 保存
+  Chain Data (JWT) → プレイヤー名 + スキンデータ
+  Base64 RGBA → PNG → skins/{player}_{skinId}.png
+  → skins/{player}_{skinId}.json（メタデータ サイドカー）
         │
         ▼
 [接続クリーンアップ]
@@ -109,32 +108,43 @@ Rust 版の特徴：
 
 ```
 src/
-├── main.rs              # サーバーエントリーポイント & main loop
-├── lib.rs               # ライブラリルート＆モジュール公開
-├── network/             # ネットワーク抽象化層
-│   ├── mod.rs          # ネットワーク設定＆実装
-│   └── udp.rs          # UDP ソケット（async Tokio）
-├── raknet/              # RakNet プロトコル実装
-│   ├── mod.rs          # RakNet 構造体＆設定
-│   └── server.rs       # RakNet サーバーパケットハンドラ
-├── bedrock/             # Minecraft Bedrock プロトコル
-│   ├── mod.rs          # Bedrock データ構造
-│   ├── login.rs        # Login パケット解析＆スキン抽出
-│   └── skin.rs         # PNG 生成＆画像処理
-├── crypto/              # 暗号化ユーティリティ
-│   └── jwt.rs          # JWT トークン解析＆Base64 デコード
-├── util/                # ユーティリティモジュール
-│   ├── buffer.rs       # バイナリバッファ（エンディアン対応）
-│   ├── config.rs       # 設定管理
-│   └── logger.rs       # ログ初期化
-├── error.rs             # エラーハンドリング＆型定義
-├── build.rs             # ビルドスクリプト（Windows リソース埋め込み）
-└── res/
-    └── app.ico         # Windows アプリケーションアイコン
+├── main.rs               # バイナリのエントリーポイント（CLI、設定、STUN、サーバーループ）
+├── lib.rs                # ライブラリルート＆公開モジュール
+├── cli.rs                # clap CLI 定義（--logs、--filter、--debug など）
+├── error.rs              # エラー型＆Result エイリアス
+├── bedrock/              # Minecraft Bedrock プロトコル
+│   ├── mod.rs           # 再エクスポート＆最新バージョン/プロトコル参照
+│   ├── version.rs       # プロトコル↔バージョン対応表＆未知プロトコルのフォールバック
+│   ├── login.rs         # Login パケット解析＆JWT チェーン/スキン抽出
+│   ├── skin.rs          # スキンデコード、PNG エンコード、保存処理（savemode）
+│   ├── batch.rs         # バッチパケット処理
+│   └── responses.rs     # 送信応答（NetworkSettings など）
+├── raknet/               # RakNet プロトコル実装
+│   ├── mod.rs           # RakNet 構造体＆設定
+│   ├── constants.rs     # パケット ID＆定数
+│   ├── protocol.rs      # フレーム/データグラム型
+│   └── server/          # RakNet サーバー
+│       ├── mod.rs       # サーバー状態、パケットルーティング、再送ワーカー
+│       ├── session.rs   # クライアントごとのセッション状態
+│       ├── handshake.rs # Unconnected PING/PONG、OCR1/2 応答
+│       ├── frames.rs    # フレームセットの符号化/解析、信頼性、分割
+│       └── bedrock.rs   # Bedrock パケット処理（login → スキン保存）
+├── crypto/               # 暗号化ユーティリティ
+│   ├── mod.rs
+│   └── jwt.rs           # JWT 解析＆Base64 デコード
+├── network/              # ネットワーク抽象化
+│   ├── mod.rs           # ネットワーク設定＆ラッパー
+│   └── udp.rs           # UDP ソケット（async Tokio）
+└── util/                 # ユーティリティ
+    ├── mod.rs
+    ├── buffer.rs        # バイナリバッファ（リトル/ビッグエンディアン）
+    ├── config.rs        # config.jsonc の読み書き＆JSONC コメント除去
+    ├── logger.rs        # C++ スタイルのカラー出力フォーマッタ
+    └── stun.rs          # STUN 外部 IP 発見
 
-Cargo.toml              # Rust パッケージマニフェスト
-README.md              # 英語ドキュメント
-README.ja.md           # このファイル
+build.rs                 # Windows アイコン埋め込み
+res/
+└── app.ico              # Windows アプリケーションアイコン
 ```
 
 ---
@@ -146,37 +156,16 @@ README.ja.md           # このファイル
 - **Rust**: 1.70 以上（[rustup.rs](https://rustup.rs) からインストール）
 - **Cargo**: Rust に付属
 
-### Windows
+### Windows / Linux / macOS
 
 ```bash
 cargo build --release
 ```
 
-出力: `target/release/skingetbe.exe`（アイコン埋め込み済み）
+- Windows: `target/release/skingetbe.exe`（アイコン埋め込み済み）
+- Linux/macOS: `target/release/skingetbe`
 
-### Linux / macOS
-
-```bash
-cargo build --release
-```
-
-出力: `target/release/skingetbe`
-
-### クロスコンパイル
-
-Rust の標準的なターゲットを使用：
-
-```bash
-# macOS（Linux/Windows から）
-cargo build --release --target aarch64-apple-darwin   # Apple Silicon
-cargo build --release --target x86_64-apple-darwin    # Intel
-
-# Linux ARM64
-cargo build --release --target aarch64-unknown-linux-gnu
-
-# Windows MSVC
-cargo build --release --target x86_64-pc-windows-msvc
-```
+`windows` と `winres` の依存は **Windows のみ**で使用されます。他のプラットフォームではビルドに含まれません。
 
 ### ビルドオプション
 
@@ -184,93 +173,117 @@ cargo build --release --target x86_64-pc-windows-msvc
 # デバッグビルド（コンパイル高速、実行は遅い）
 cargo build
 
-# リリースビルド（最適化、実行高速）
+# リリースビルド（最適化、バイナリ小サイズ）
 cargo build --release
-
-# 詳細な出力付きビルド
-RUST_LOG=debug cargo build --release
-
-# バイナリサイズ最小化
-cargo build --release -Z build-std=std,panic_abort --target x86_64-unknown-linux-gnu
 ```
 
 ---
 
 ## 使い方
 
+```
+Usage: skingetbe [OPTIONS]
+
+Options:
+  -c, --config          config.jsonc からバージョン/プロトコルを読み込む
+                        （デフォルト。CLI 互換用に保持）
+      --filter <NAME>   プレイヤー名でフィルタ（部分一致）
+      --logs [<level>]  ログレベル: 0=error, 1=warn, 2=info, 3=debug, 4=trace。
+                        値なしの場合は debug（3）になる
+  -d, --debug           --logs 3 の後方互換エイリアス
+  -h, --help            ヘルプを表示
+  -V, --version         バージョンを表示
+```
+
+Windows 形式の `/flag` 引数も使用できます（例: `/help`、`/logs 3`）。
+
 ### サーバー起動
 
 ```bash
-# デフォルト設定で起動
+# デフォルト設定で起動（info レベルのログ）
 ./skingetbe
 # または Windows
 skingetbe.exe
+
+# デバッグ出力
+./skingetbe --logs
+./skingetbe --logs 3
+./skingetbe --debug        # --logs 3 と同じ
+
+# フルトレース出力
+./skingetbe --logs 4
+
+# エラーのみ出力
+./skingetbe --logs 0
 ```
+
+デフォルトのログレベルは `info`（2）です。
 
 ### 初回起動時
 
-初回実行時に `config.json` が自動生成されます（**バイナリと同じディレクトリに生成**）：
+初回実行時に `config.jsonc` が自動生成されます（**バイナリと同じディレクトリに生成**）：
 
-```json
+```jsonc
 {
-  "version": "0.1.0",
-  "protocol": 486,
-  "port": 19133,
+  // サーバーリストに表示される Minecraft Bedrock のバージョン文字列。
+  "version": "1.26.21",
+  // Bedrock のプロトコル番号。クライアントのバージョンに合わせる。
+  "protocol": 975,
+  // UDP リスンポート。
+  "port": 19132,
+  // バインドアドレス。0.0.0.0 は全ネットワークインターフェースで待ち受け。
   "bind_addr": "0.0.0.0",
-  "motd": "SkinGetBE",
-  "max_players": 100
+  // スキン保存モード: 0 = 保存しない, 1 = 上書き, 2 = 連番ファイルとして保存。
+  "savemode": 2
 }
 ```
 
 **生成先の例**:
-- Windows: `C:\path\to\skingetbe.exe` → `C:\path\to\config.json` に生成
-- Linux: `/usr/local/bin/skingetbe` → `/usr/local/bin/config.json` に生成
+- Windows: `C:\path\to\skingetbe.exe` → `C:\path\to\config.jsonc`
+- Linux: `/usr/local/bin/skingetbe` → `/usr/local/bin/config.jsonc`
 
 ### 設定
 
-`config.json` をエディタで編集してカスタマイズ：
-
 | 設定項目 | 型 | デフォルト | 用途 |
 |----------|-----|-----------|------|
-| `port` | int | 19133 | UDP リスンポート |
-| `bind_addr` | string | "0.0.0.0" | バインドアドレス |
-| `protocol` | int | 486 | Bedrock プロトコル番号 |
-| `motd` | string | "SkinGetBE" | サーバー MOTD |
-| `max_players` | int | 100 | 接続制限数 |
-| `version` | string | "0.1.0" | 設定スキーマバージョン |
+| `port` | int | 19132 | UDP リスンポート（到達可能である必要あり） |
+| `bind_addr` | string | "0.0.0.0" | バインドアドレス（0.0.0.0 = 全インターフェース） |
+| `protocol` | int | 975 | Bedrock プロトコル番号 |
+| `version` | string | "1.26.21" | サーバーリスト / MOTD に表示するバージョン文字列 |
+| `savemode` | int | 2 | `0`=保存しない、`1`=上書き、`2`=重複時は連番 |
+
+JSONC コメントに対応しています。`protocol`/`version` が欠落・不正な場合は、自動的に最新対応バージョンで補完・正規化されます。
 
 ### Minecraft クライアント側の操作
 
-1. BE クライアントを起動し、サーバータブを開く
+1. BE クライアントを起動し、**Play → サーバータブ**（または **LAN**）を開く
 2. `127.0.0.1`（または SkinGetBE を動かしているマシンの IP）に接続
-3. 接続を試みると自動的にスキンが取得・保存され、クライアントは切断される
+3. 接続すると自動的にスキンが取得・保存され、クライアントは切断される
 4. `skins/` ディレクトリに PNG ファイルが保存されている
 
 ### 出力結果
 
-スキンは `skins/` ディレクトリに PNG 形式で保存されます：
+スキンは `skins/` ディレクトリに PNG + JSON メタデータのペアで保存されます：
 
 ```
 skins/
 ├── Steve_Standard_Steve.png
+├── Steve_Standard_Steve.json     ← メタデータ サイドカー
 ├── Alex_CustomSkinId.png
-└── Player_AnotherSkin_1.png   ← 重複時は連番が付く
+└── Player_AnotherSkin_1.png      ← 重複時は連番（savemode 2）
 ```
 
 ### ロギング
 
-`RUST_LOG` 環境変数でログレベルを制御：
+カラー出力のログ形式は元の C++ ツールと同じです：`[HH:MM:SS] [LEVEL] message`
 
-```bash
-# SkinGetBE の全ログを表示
-RUST_LOG=skingetbe=debug ./skingetbe
-
-# Tokio ネットワークログ
-RUST_LOG=tokio=debug ./skingetbe
-
-# 完全なトレース出力
-RUST_LOG=trace ./skingetbe
-```
+| レベル | `--logs` 値 | 出力内容 |
+|--------|-------------|----------|
+| error | 0 | エラーのみ |
+| warn | 1 | + 警告（未知プロトコルのフォールバックなど） |
+| info | 2（デフォルト） | 起動状態、スキン保存メッセージ |
+| debug | 3 | パケットレベルの詳細 |
+| trace | 4 | フレーム全体・低レベルトレース |
 
 ---
 
@@ -278,69 +291,47 @@ RUST_LOG=trace ./skingetbe
 
 ### Bedrock バージョンとプロトコル番号
 
-`config.json` の `protocol` を目的のバージョンに合わせてください：
+`config.jsonc` の `protocol` はクライアントのバージョンに合わせてください。完全な対応表は `src/bedrock/version.rs` にあり、0.14.3（プロトコル 70）から最新版まで網羅しています：
 
-| Bedrock バージョン | プロトコル番号 | 備考 |
-|-------------------|---------------|------|
-| 1.20.0–1.20.70    | 471–486       | 1.20 初期版 |
-| 1.21.0–1.21.50    | 766           | 1.21 系 |
-| 1.26.0+           | 924+          | 最新版 |
+| Bedrock バージョン | プロトコル | 備考 |
+|-------------------|------------|------|
+| 1.20.0–1.21.0    | 589–685    | 1.20 系 |
+| 1.21.2–1.21.50   | 686–766    | 1.21 系 |
+| 1.21.60–1.21.124 | 776–860    | 1.21 系 |
+| 1.21.130         | 898        | |
+| 1.26.0           | 924        | |
+| 1.26.10          | 944        | |
+| 1.26.21          | 975        | デフォルト / 最新既知 |
 
----
-
-## アーキテクチャ比較
-
-### C++ → Rust マイグレーション
-
-| 項目 | C++ 版 | Rust 版 | 利点 |
-|------|--------|---------|------|
-| スレッド処理 | `std::thread` プール | Tokio async/await | スケーラビリティ向上 |
-| メモリ管理 | 手動（new/delete） | 所有権システム | メモリリークなし |
-| バッファ処理 | ポインタキャスト | 型安全バッファ | 型安全性 |
-| 圧縮 | zlib ヘッダのみ | flate2 crate | 実績のあるライブラリ |
-| 画像エンコード | 手動 PNG アルゴリズム | png crate | 最適化済みエンコーダ |
-| 設定管理 | JSON 手動解析 | serde-json | 自動シリアライズ |
-| エラー処理 | int/文字列戻り値 | Rust Result<T> | コンパイル時チェック |
+対応表にない、または新しいプロトコル（プレビュー版など）は拒否されません。警告（`Unknown Bedrock protocol <N> - falling back to ...`）をログに出力し、最新既知のバージョンで処理を継続します。
 
 ---
 
-## パフォーマンス特性
+## ネットワークの注意点
 
-- **メモリ**: 基本 ~50-100 MB、アクティブな接続あたり +1-2 MB
-- **CPU**: アイドル時は最小限、スキン抽出時にスパイク
-- **スループット**: Tokio は CPU あたり 10k+ の並行接続を処理
-- **スキン抽出**: ログインあたり ~5-10ms（PNG エンコード）
-
----
-
-## 認証について
-
-| 項目 | 本ツールの扱い |
-|------|--------------|
-| Xbox Live 認証 | バイパス（オフラインモード） |
-| XSTS トークン | 検証しない |
-| JWT 署名検証 | 実施しない（データ解析のみ） |
-| セキュリティモデル | なし（研究ツール） |
-
-このツールは**正規 Bedrock サーバーとして機能できません**。ローカル・検証環境でのみ使用してください。
+- UDP で待ち受けます（デフォルトはポート **19132**）。ファイアウォールでポートを開放し、インターネット越しに接続する場合はルーターで転送設定を行ってください。
+- 起動時に **STUN** リクエストで外部 IP を発見し、RakNet ハンドシェイクに含めます。
+- 暗号化はネゴシエーションしないため、**オフラインモード**のクライアントのみ接続できます。正規のオンライン Bedrock サーバーとしては機能しません。研究・検証目的のみで使用してください。
 
 ---
 
 ## 依存ライブラリ
 
-主要な crates：
-
-- **tokio** — 非同期ランタイム
-- **serde** / **serde_json** — 設定シリアライズ
-- **bytes** — 効率的なバイト操作
-- **jsonwebtoken** / **base64** — JWT トークン処理
-- **sha2** — 暗号ハッシング
-- **png** — PNG 画像エンコード
-- **flate2** — zlib 解凍
-- **thiserror** / **anyhow** — エラーハンドリング
-- **tracing** / **tracing-subscriber** — 構造化ログ
-
-完全な依存リストは `Cargo.toml` を参照してください。
+| Crate | 用途 |
+|-------|------|
+| **tokio** | 非同期ランタイム |
+| **clap** | CLI 解析（derive） |
+| **serde** / **serde_json** | 設定・メタデータのシリアライズ |
+| **base64** | スキンデータのデコード |
+| **flate2** | zlib 圧縮 / 解凍 |
+| **crc32fast** | PNG チャンク CRC（PNG エンコードは自前実装） |
+| **tracing** / **tracing-subscriber** | 構造化・カラー出力ログ |
+| **chrono** | ログフォーマッタのタイムスタンプ |
+| **once_cell** | Lazy 静的変数（プロトコル対応表） |
+| **rand** | GUID 生成 |
+| **thiserror** / **anyhow** | エラーハンドリング |
+| **windows** | コンソール仮想ターミナル対応（Windows のみ） |
+| **winres** | ビルド時のアイコン埋め込み（Windows のみ） |
 
 ---
 
@@ -351,69 +342,53 @@ RUST_LOG=trace ./skingetbe
 **エラー**: `Address already in use`
 
 **解決策**:
-1. `config.json` の `port` を変更する
+1. `config.jsonc` の `port` を変更する
 2. または競合するプロセスを停止：
    ```bash
    # Windows PowerShell
-   Get-NetTCPConnection -LocalPort 19133
-   
+   Get-NetTCPConnection -LocalPort 19132
+
    # Linux
-   lsof -i :19133
-   netstat -tlnp | grep 19133
+   lsof -i :19132
+   netstat -tlnp | grep 19132
    ```
 
 ### クライアントが接続できない
 
-**原因**: ネットワーク/ファイアウォール
-
 **確認事項**:
-1. config.json のポート番号が正しいか
-2. ファイアウォールが該当 UDP ポートを許可しているか
-3. `RUST_LOG=debug` で接続試行を確認
-4. まず同一マシンからの接続（127.0.0.1）をテスト
+1. config の `port` が正しく、サーバーが待ち受け状態であること
+2. ファイアウォールが該当 UDP ポートへの受信を許可しているか
+3. まず同一マシンからの接続（`127.0.0.1`）をテスト
+4. `--logs 3` でハンドシェイクパケットを確認
 
-### スキン抽出が遅い
+### "Unknown Bedrock protocol" の警告
 
-**確認項目**:
-- CPU 使用率（PNG エンコード時はスパイクするはず）
-- ディスク I/O 速度（SSD vs HDD の差は大）
-- 並行接続数が多すぎないか
+クライアントのプロトコル番号が対応表にありません。サーバーは自動的に最新既知バージョン（1.26.21 / プロトコル 975）へフォールバックして処理を継続します。別のバージョンを対象にしたい場合は `config.jsonc` の `protocol` を変更してください。
 
-### メモリ使用量が増加し続ける
+### スキンが保存されない
 
-**原因**: 接続状態が蓄積
+`config.jsonc` の `savemode` を確認：
+- `0` は保存を完全に無効化
+- `1` は既存ファイルを上書き
+- `2` は連番ファイルを作成（デフォルト）
 
-**対策**:
-1. config.json で `max_players` を削減
-2. `top`（Linux）/ Task Manager（Windows）で監視
-3. ログでクライアント接続クリーンアップ確認
+また、クライアントが実際に Login 段階まで到達しているか、`--logs 3` の出力を確認してください。
 
 ---
 
 ## 開発
 
-### デバッグモードでの実行
-
 ```bash
-# デバッグバイナリ + フルロギング
-RUST_LOG=debug cargo run
-```
+# デバッグモード + フルロギングで実行
+cargo run -- --logs 3
 
-### テスト実行
-
-```bash
+# テスト実行（ライブラリ + CLI）
 cargo test
-```
 
-### コード整形
-
-```bash
+# コード整形
 cargo fmt
-```
 
-### 静的解析
-
-```bash
+# 静的解析
 cargo clippy
 ```
 
@@ -421,27 +396,12 @@ cargo clippy
 
 ## 参考資料
 
-- [wiki.vg/Bedrock Protocol](https://wiki.vg/Bedrock_Protocol)
+- [Mojang/bedrock-protocol-docs](https://github.com/Mojang/bedrock-protocol-docs)
 - [PrismarineJS/bedrock-protocol](https://github.com/PrismarineJS/bedrock-protocol)
+- [Sandertv/go-raknet](https://github.com/Sandertv/go-raknet)
 - [RakNet Documentation](https://github.com/facebookarchive/RakNet)
+- [wiki.vg/Bedrock Protocol](https://minecraft.wiki/w/Bedrock_Edition_protocol)
 - [Tokio Guide](https://tokio.rs/)
-- Minecraft Bedrock リバースエンジニアリング リソース
-
----
-
-## Rust 版 vs C++ 版 の比較
-
-Rust 版は、元の C++ 実装の改善版です：
-
-| 指標 | C++ | Rust |
-|------|-----|------|
-| **コード行数** | ~2000 | ~1200 |
-| **メモリ安全性** | 手動 | 自動 |
-| **並行処理** | スレッド | async/await |
-| **ビルド時間** | 高速 | 初回遅い、キャッシュ効果あり |
-| **実行パフォーマンス** | 優秀 | 同等（トレードオフの違い） |
-| **クロスプラットフォーム** | プラットフォーム固有コード必須 | 単一コードベース |
-| **型安全性** | 弱い | 強い |
 
 ---
 
@@ -455,10 +415,10 @@ Rust 版は、元の C++ 実装の改善版です：
 
 貢献歓迎です。検討中の機能：
 
-- STUN プロトコル実装
-- Cape/Geometry JSON 抽出
-- 接続永続化
+- テストスイート拡張（パケットレベルのフィクスチャ）
+- 新 Bedrock リリースへのプロトコル対応表更新
+- Cape / Geometry 抽出
+- 暗号化通信対応
 - パフォーマンス最適化
-- テストスイート拡張
 
-PR の際は説明とベンチマーク比較をお願いします。
+PR の際は説明と、可能であればベンチマーク比較をお願いします。

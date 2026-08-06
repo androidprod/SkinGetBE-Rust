@@ -1,9 +1,14 @@
+mod cli;
+
+use clap::Parser;
 use skingetbe::{
     network::Network,
     raknet::{RakNetConfig, RakNetServer},
-    util::{ConfigManager, Logger},
+    util::{Config, ConfigManager, Logger, StunClient},
 };
 use std::sync::Arc;
+
+use cli::{normalize_args, Cli};
 
 const LOGO: &str = r#"
    _____ _    _      _____      _   ____  ______
@@ -16,27 +21,23 @@ const LOGO: &str = r#"
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = match parse_args(std::env::args().skip(1).collect()) {
-        Ok(cli) => cli,
-        Err(message) => {
-            eprintln!("{}", message);
-            print_help();
-            return Ok(());
-        }
-    };
+    // `parse_from` treats the first element as the program name, so keep a
+    // placeholder in position 0 (we only transform `/flag` -> `--flag` args).
+    let mut args = normalize_args(std::env::args().skip(1));
+    args.insert(0, "skingetbe".to_string());
+    let cli = Cli::parse_from(args);
 
     // Initialize logging from the unified --logs level.
-    skingetbe::init_with_verbosity(cli.log_level);
+    skingetbe::init_with_verbosity(cli.log_level());
     // Print banner as a colored info block (no timestamp/label prefix)
     Logger::info_block(LOGO);
 
     Logger::info("SkinGetBE starting up...");
 
-    // Get working directory
     let work_dir = std::env::current_dir()?;
     Logger::status("Working Directory", work_dir.display());
 
-    // Determine config file path (same directory as binary)
+    // Config file path is next to the binary.
     let config_path = {
         let exe_path = std::env::current_exe()?;
         let bin_dir = exe_path
@@ -47,13 +48,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load configuration
     let config_mgr = ConfigManager::new(&config_path);
-    let config = match config_mgr.load().await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!("Failed to load config: {}", e);
-            return Err(e.into());
-        }
-    };
+    let config = config_mgr.load()?;
 
     Logger::status("Version", &config.version);
     Logger::status("Protocol", config.protocol);
@@ -65,8 +60,6 @@ async fn main() -> anyhow::Result<()> {
     let network_config = skingetbe::network::NetworkConfig {
         bind_addr: config.bind_addr.clone(),
         bind_port: config.port,
-        max_packet_size: 65535,
-        timeout_ms: 5000,
     };
 
     let mut network = Network::new(network_config);
@@ -76,21 +69,23 @@ async fn main() -> anyhow::Result<()> {
 
     Logger::info("Attempting NAT discovery (STUN)...");
     let server_socket = network.get_socket();
-    let ext_ip = discover_external_ip(&server_socket).await;
+    let ext_ip = StunClient::new(5000)
+        .discover_external_ip(&server_socket)
+        .await;
     Logger::success(format!("External IP detected: {}", ext_ip));
     Logger::info(format!(
         "Note: Ensure UDP Port {} is open on your router if not reachable.",
         config.port
     ));
 
-    run_server(network, config, cli.filter_name, ext_ip).await?;
+    run_server(network, config, cli.filter, ext_ip).await?;
 
     Ok(())
 }
 
 async fn run_server(
     network: Network,
-    config: skingetbe::util::Config,
+    config: Config,
     filter_name: Option<String>,
     external_ip: String,
 ) -> anyhow::Result<()> {
@@ -143,147 +138,5 @@ async fn run_server(
                 }
             }
         }
-    }
-}
-
-async fn discover_external_ip(socket: &skingetbe::network::UdpSocket) -> String {
-    let client = skingetbe::util::stun::StunClient::new(5000);
-    client.discover_external_ip(socket).await
-}
-
-/// Print help message
-fn print_help() {
-    println!("Usage: SkinGetBE.exe [options]");
-    println!("Options:");
-    println!("  -h, --help          Show this help message");
-    println!("  --config            Enable loading version/protocol from config.jsonc");
-    println!("  --filter <name>     Filter displayed players by name (substring match)");
-    println!("  --logs [level]      Set log level: 0=error, 1=warn, 2=info, 3=debug, 4=trace");
-    println!("Example: SkinGetBE.exe --filter Steve --logs 3");
-}
-
-#[derive(Debug)]
-struct CliOptions {
-    log_level: u8,
-    _config: bool,
-    filter_name: Option<String>,
-}
-
-fn parse_args(args: Vec<String>) -> Result<CliOptions, String> {
-    let mut log_level = 2u8;
-    let mut config = true;
-    let mut filter_name = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "-h" | "--help" | "/?" | "/help" => {
-                print_help();
-                std::process::exit(0);
-            }
-            "-d" | "--debug" | "/debug" => {
-                // Backward-compatible alias for the old debug flag.
-                log_level = 3;
-                index += 1;
-            }
-            "--config" | "-c" | "/config" => {
-                config = true;
-                index += 1;
-            }
-            "--logs" => {
-                match args.get(index + 1) {
-                    Some(value) if !value.starts_with('-') && !value.starts_with('/') => {
-                        log_level = parse_log_level(value)?;
-                        index += 2;
-                    }
-                    _ => {
-                        // `--logs` alone means the old verbose/debug behavior.
-                        log_level = 3;
-                        index += 1;
-                    }
-                }
-            }
-            "--filter" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    "Missing value for --filter. Expected a player name substring.".to_string()
-                })?;
-                filter_name = Some(value.clone());
-                index += 2;
-            }
-            other => {
-                return Err(format!("Unknown argument: {}", other));
-            }
-        }
-    }
-
-    Ok(CliOptions {
-        log_level,
-        _config: config,
-        filter_name,
-    })
-}
-
-fn parse_log_level(value: &str) -> Result<u8, String> {
-    let parsed = value.parse::<u8>().map_err(|_| {
-        format!(
-            "Invalid --logs level: {}. Expected 0, 1, 2, 3, or 4.",
-            value
-        )
-    })?;
-
-    if parsed > 4 {
-        return Err(format!(
-            "Invalid --logs level: {}. Expected 0, 1, 2, 3, or 4.",
-            value
-        ));
-    }
-
-    Ok(parsed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_args;
-
-    #[test]
-    fn parses_logs_level_and_filter_arguments() {
-        let cli = parse_args(vec![
-            "--logs".into(),
-            "3".into(),
-            "--filter".into(),
-            "Steve".into(),
-        ])
-        .expect("parse should succeed");
-
-        assert_eq!(cli.log_level, 3);
-        assert_eq!(cli.filter_name.as_deref(), Some("Steve"));
-    }
-
-    #[test]
-    fn logs_without_level_enables_debug_verbosity() {
-        let cli = parse_args(vec!["--logs".into()]).expect("parse should succeed");
-
-        assert_eq!(cli.log_level, 3);
-    }
-
-    #[test]
-    fn debug_alias_maps_to_debug_verbosity() {
-        let cli = parse_args(vec!["--debug".into()]).expect("parse should succeed");
-
-        assert_eq!(cli.log_level, 3);
-    }
-
-    #[test]
-    fn rejects_invalid_logs_level() {
-        let error = parse_args(vec!["--logs".into(), "9".into()]).expect_err("parse should fail");
-
-        assert!(error.contains("Invalid --logs level"));
-    }
-
-    #[test]
-    fn rejects_missing_filter_value() {
-        let error = parse_args(vec!["--filter".into()]).expect_err("parse should fail");
-
-        assert!(error.contains("Missing value for --filter"));
     }
 }

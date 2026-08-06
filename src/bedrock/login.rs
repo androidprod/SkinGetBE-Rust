@@ -5,43 +5,6 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::HashSet;
 use tracing::debug;
 
-/// Login packet data structure
-#[derive(Debug, Clone)]
-pub struct LoginData {
-    pub protocol: u32,
-    pub username: String,
-    pub xuid: String,
-    pub uuid: String,
-    pub device_os: i32,
-    pub device_model: String,
-}
-
-impl LoginData {
-    /// Parse login packet from raw buffer
-    ///
-    /// # Arguments
-    /// * `data` - Raw packet data
-    /// * `protocol` - Server protocol version from config
-    pub fn from_buffer(data: &[u8], protocol: u32) -> Result<Self> {
-        if data.len() < 8 {
-            return Err(crate::Error::InvalidData("Login packet too short".into()));
-        }
-
-        // Skip protocol version parsing for now
-        // Full implementation would parse JWT chains and extract client data
-        let username = format!("Player_{}", rand::random::<u32>() % 10000);
-
-        Ok(LoginData {
-            protocol, // Use config protocol version
-            username,
-            xuid: String::new(),
-            uuid: String::new(),
-            device_os: 0,
-            device_model: "Unknown".to_string(),
-        })
-    }
-}
-
 /// Parsed Bedrock login capture data
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LoginMetadata {
@@ -105,7 +68,7 @@ pub fn parse_login_packet(data: &[u8]) -> Result<Option<ParsedLoginPacket>> {
             ProtocolEncoding::U32Be => tmp.read_u32().ok()?,
             ProtocolEncoding::VarInt => tmp.read_var_int().ok()?,
         };
-        if protocol == 0 || protocol > 2000 {
+        if protocol == 0 || protocol > 100_000 {
             return None;
         }
 
@@ -156,7 +119,7 @@ pub fn parse_login_packet(data: &[u8]) -> Result<Option<ParsedLoginPacket>> {
         }
 
         let mut padded = cleaned;
-        while padded.len() % 4 != 0 {
+        while !padded.len().is_multiple_of(4) {
             padded.push('=');
         }
 
@@ -354,6 +317,182 @@ pub fn parse_login_packet(data: &[u8]) -> Result<Option<ParsedLoginPacket>> {
     }))
 }
 
+/// Legacy JWT-scanning fallback used when the strict login parser cannot match
+/// the packet layout. Scans the JWT chain for the player name and raw skin
+/// bytes, returning `(username, skin_bytes)` if a skin was found.
+///
+/// Note: callers pass the already-drained buffer (see the original server path
+/// which consumes the remaining bytes before attempting a strict parse), so in
+/// practice this returns `None` immediately. Kept to preserve behavior.
+pub fn extract_legacy_login_fields(buf: &mut Buffer) -> Option<(String, Vec<u8>)> {
+    let jwt_count = match buf.read_var_int() {
+        Ok(count) => count as usize,
+        Err(_) => {
+            debug!("LOGIN fallback skipped: JWT count missing");
+            return None;
+        }
+    };
+
+    debug!("LOGIN contains {} JWT tokens", jwt_count);
+
+    let mut jwt_payloads: Vec<String> = Vec::new();
+    for _ in 0..jwt_count {
+        let len = match buf.read_var_int() {
+            Ok(l) => l as usize,
+            Err(_) => {
+                debug!("LOGIN fallback aborted: JWT token length missing");
+                return None;
+            }
+        };
+
+        let token_bytes = match buf.read_bytes(len) {
+            Ok(b) => b,
+            Err(_) => {
+                debug!("LOGIN fallback aborted: JWT token bytes missing");
+                return None;
+            }
+        };
+
+        let token_str = match String::from_utf8(token_bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                debug!("LOGIN fallback token is not valid UTF-8");
+                continue;
+            }
+        };
+
+        match crate::crypto::jwt::JWT::get_payload(&token_str) {
+            Ok(payload_json) => {
+                tracing::trace!("Decoded JWT payload: {}", payload_json);
+                jwt_payloads.push(payload_json);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to decode JWT payload: {}", e);
+            }
+        }
+    }
+
+    let client_data_json: Option<String> = match buf.read_var_int() {
+        Ok(len) => match buf.read_bytes(len as usize) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => {
+                    debug!("Client data JSON length: {}", s.len());
+                    Some(s)
+                }
+                Err(_) => {
+                    debug!("Client data not valid UTF-8");
+                    None
+                }
+            },
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+
+    if let Some(cd) = client_data_json.as_deref() {
+        match crate::crypto::jwt::parse_auth_chain(cd) {
+            Ok(list) => {
+                for p in list {
+                    debug!("Auth chain payload: {}", p);
+                    jwt_payloads.push(p);
+                }
+            }
+            Err(_) => {
+                debug!("No auth chain parsed from client data");
+            }
+        }
+    }
+
+    let mut username: Option<String> = None;
+    let mut skin_bytes_opt: Option<Vec<u8>> = None;
+
+    for payload in &jwt_payloads {
+        if username.is_none() {
+            if let Some(name) = crate::crypto::jwt::JWT::get_json_value(payload, "displayName") {
+                username = Some(name);
+            } else if let Some(name) =
+                crate::crypto::jwt::JWT::get_json_value(payload, "extraData.displayName")
+            {
+                username = Some(name);
+            } else if let Some(name) = crate::crypto::jwt::JWT::get_json_value(payload, "username")
+            {
+                username = Some(name);
+            }
+        }
+
+        for key in [
+            "SkinData",
+            "skinData",
+            "Skin",
+            "skin",
+            "SkinImage",
+            "textures",
+        ]
+        .iter()
+        {
+            if let Some(val) = crate::crypto::jwt::JWT::get_json_value(payload, key) {
+                if let Some(decoded) = decode_skin_bytes(&val) {
+                    skin_bytes_opt = Some(decoded);
+                    break;
+                }
+            }
+        }
+
+        if skin_bytes_opt.is_some() && username.is_some() {
+            break;
+        }
+    }
+
+    if skin_bytes_opt.is_none() {
+        if let Some(cd) = client_data_json.as_deref() {
+            if let Ok(list) = crate::crypto::jwt::parse_auth_chain(cd) {
+                for p in list.iter() {
+                    for key in [
+                        "SkinData",
+                        "skinData",
+                        "Skin",
+                        "skin",
+                        "SkinImage",
+                        "textures",
+                    ]
+                    .iter()
+                    {
+                        if let Some(val) = crate::crypto::jwt::JWT::get_json_value(p, key) {
+                            if let Some(decoded) = decode_skin_bytes(&val) {
+                                skin_bytes_opt = Some(decoded);
+                                break;
+                            }
+                        }
+                    }
+                    if skin_bytes_opt.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let name = username.unwrap_or_else(|| format!("player_{}", rand::random::<u32>() % 10000));
+    Some((name, skin_bytes_opt?))
+}
+
+fn decode_skin_bytes(val: &str) -> Option<Vec<u8>> {
+    use base64::{
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+        Engine,
+    };
+
+    let trimmed = val.trim_matches('"').trim().to_string();
+
+    if let Ok(decoded) = URL_SAFE_NO_PAD.decode(trimmed.as_bytes()) {
+        return Some(decoded);
+    }
+    if let Ok(decoded) = STANDARD.decode(trimmed.as_bytes()) {
+        return Some(decoded);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +569,17 @@ mod tests {
         assert_eq!(parsed.protocol, 975);
         assert_eq!(parsed.player_name, "Steve");
         assert_eq!(parsed.skin_data.len(), 64 * 64 * 4);
+    }
+
+    #[test]
+    fn parses_new_preview_protocol_login() {
+        let parsed = parse_login_packet(&login_payload(2168, ProtocolEncoding::U32Le, true))
+            .unwrap()
+            .expect("login should parse");
+
+        assert_eq!(parsed.protocol, 2168);
+        assert_eq!(parsed.player_name, "Steve");
+        assert_eq!(parsed.skin_id, "Standard_Steve");
     }
 
     #[test]

@@ -27,8 +27,11 @@ fn main() {
 
         // Set string properties
         res.set("ProductName", "SkinGetBE");
-        res.set("FileDescription", "Minecraft Bedrock Edition Skin Extraction Tool");
-        res.set("CompanyName", "SkinGetBE Contributors");
+        res.set(
+            "FileDescription",
+            "Minecraft Bedrock Edition Skin Extraction Tool",
+        );
+        res.set("CompanyName", "androidprod");
         res.set("ProductVersion", "0.1.0");
         res.set("FileVersion", "0.1.0");
         res.set("LegalCopyright", "MIT License");

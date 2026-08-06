@@ -79,22 +79,6 @@ impl Visit for MessageVisitor {
 pub struct Logger;
 
 impl Logger {
-    /// Initialize the logger with environment configuration
-    pub fn init() {
-        Self::enable_virtual_terminal_processing();
-        Self::init_with_level(tracing::Level::INFO);
-    }
-
-    /// Initialize the logger with debug mode
-    pub fn init_with_debug(debug: bool) {
-        let level = if debug {
-            tracing::Level::DEBUG
-        } else {
-            tracing::Level::INFO
-        };
-        Self::init_with_level(level);
-    }
-
     /// Initialize the logger with numeric verbosity.
     ///
     /// Levels:
@@ -106,7 +90,7 @@ impl Logger {
 
     /// Initialize with specific level
     fn init_with_level(level: tracing::Level) {
-        let _ = tracing_subscriber::fmt()
+        tracing_subscriber::fmt()
             .event_format(CppStyleFormatter)
             .with_max_level(level)
             .with_env_filter(
@@ -167,16 +151,6 @@ impl Logger {
     pub fn status(label: impl fmt::Display, value: impl fmt::Display) {
         tracing::info!("{:>16}: {}", label, value);
     }
-}
-
-/// Initialize logging (called from library init)
-pub fn init() {
-    Logger::init();
-}
-
-/// Initialize logging with debug mode
-pub fn init_with_debug(debug: bool) {
-    Logger::init_with_debug(debug);
 }
 
 /// Initialize logging with numeric verbosity.

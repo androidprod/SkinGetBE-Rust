@@ -20,25 +20,6 @@ pub mod util;
 
 pub use error::{Error, Result};
 
-// Re-export commonly used items
-pub use bedrock::Packets;
-pub use crypto::JWT;
-pub use network::Network;
-pub use util::{Config, ConfigManager, Logger};
-
-/// Library version
-pub const VERSION: u32 = 1;
-
-/// Initialize the SkinGetBE library
-pub fn init() {
-    util::logger::init();
-}
-
-/// Initialize the SkinGetBE library with debug mode
-pub fn init_with_debug(debug: bool) {
-    util::logger::init_with_debug(debug);
-}
-
 /// Initialize the SkinGetBE library with numeric log verbosity.
 pub fn init_with_verbosity(verbosity: u8) {
     util::logger::init_with_verbosity(verbosity);

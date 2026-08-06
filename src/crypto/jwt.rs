@@ -74,7 +74,7 @@ impl JWT {
             .or_else(|_| {
                 // Add padding if needed and try again
                 let mut padded = encoded.to_string();
-                while padded.len() % 4 != 0 {
+                while !padded.len().is_multiple_of(4) {
                     padded.push('=');
                 }
                 URL_SAFE_NO_PAD.decode(&padded)
@@ -98,13 +98,12 @@ impl JWT {
         let rest = &json[start_pos..];
         let content = rest.trim_start();
 
-        if content.starts_with('"') {
+        if let Some(inner) = content.strip_prefix('"') {
             // String value: find closing quote (respecting escape sequences)
             let mut value = String::new();
-            let mut chars = content[1..].chars();
             let mut prev_backslash = false;
 
-            while let Some(c) = chars.next() {
+            for c in inner.chars() {
                 if c == '"' && !prev_backslash {
                     return Some(value);
                 }

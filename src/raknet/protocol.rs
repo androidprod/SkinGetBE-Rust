@@ -197,7 +197,7 @@ impl RakNetProtocol {
         offset += 2;
 
         let byte_len = match length_mode {
-            FrameLengthMode::Bits => (len_be + 7) / 8,
+            FrameLengthMode::Bits => len_be.div_ceil(8),
             FrameLengthMode::Bytes => len_be,
         };
 
@@ -392,32 +392,5 @@ impl RakNetProtocol {
         };
 
         Some((frame, offset))
-    }
-
-    /// The caller is responsible for prefixing the frame set header if needed.
-    pub fn build_frame(
-        payload: &[u8],
-        reliability: u8,
-        _seq: u32,
-        reliable_seq: Option<u32>,
-    ) -> Result<Vec<u8>> {
-        let mut out = Vec::new();
-
-        // Frame flags
-        out.push((reliability << 5) | 0x00);
-
-        // Frame length in bits (BE u16)
-        let frame_length_bits = (payload.len() as u16) * 8;
-        out.extend_from_slice(&frame_length_bits.to_be_bytes());
-
-        // Reliable triad if required (3 bytes LE)
-        if matches!(reliability, 2 | 3 | 4 | 6 | 7) {
-            let triad = reliable_seq.unwrap_or(0).to_le_bytes();
-            out.extend_from_slice(&triad[0..3]);
-        }
-
-        // Payload
-        out.extend_from_slice(payload);
-        Ok(out)
     }
 }
