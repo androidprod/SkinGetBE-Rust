@@ -4,421 +4,115 @@
 
 # SkinGetBE - Rust Edition
 
-**A high-performance Rust implementation that captures Minecraft Bedrock Edition player skins via a from-scratch RakNet + Bedrock protocol stack**
+**Minecraft Bedrock Edition skin capture over NetherNet (WebRTC)**
 
 [![Rust Edition](https://img.shields.io/badge/Edition-Rust-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 [![Async Runtime](https://img.shields.io/badge/Runtime-Tokio-blue?style=flat-square)](https://tokio.rs/)
-[![Platform](https://img.shields.io/badge/Platform-Win%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)](#building)
-[![Protocol](https://img.shields.io/badge/Bedrock%20Protocol-Dynamic-green?style=flat-square)](#configuration)
 
 **English** | [日本語](README.ja.md)
 
 </div>
 
----
-
 ## Overview
 
-**SkinGetBE** implements the Minecraft Bedrock Edition network stack from the ground up — from raw UDP sockets through the RakNet handshake to Bedrock Login packet parsing — and automatically saves connecting clients' skin images as PNG files together with a JSON metadata sidecar.
+SkinGetBE accepts NetherNet connections from Minecraft Bedrock clients, reads the Bedrock Login packet, and saves the player's skin as a PNG alongside JSON metadata. It is a skin capture tool, **not a playable game server**: after a Login packet is parsed, it sends PlayStatus and Disconnect, then closes the connection.
 
-The Rust edition focuses on:
-- **Performance**: Async/await with Tokio; a background resend/congestion-control worker handles reliable frame retransmission
-- **Safety**: Rust's ownership and type system eliminate buffer overflow and use-after-free bug classes
-- **Portability**: A single codebase that builds on Windows, Linux, and macOS
-- **Maintainability**: Modular design split into `bedrock`, `raknet`, `network`, `crypto`, and `util` crates
+The running binary uses [`nethernet-tokio`](https://github.com/bedrock-crustaceans/nethernet) for WebRTC transport, HTTP signaling, and LAN discovery. The older RakNet implementation remains in `src/raknet/` but is not started by `src/main.rs`.
 
-> ⚠️ **Disclaimer**: This is an unofficial research and educational tool. It is not a full game server and is not intended for commercial use or public deployment. Use at your own risk.
+> **Research tool:** Do not deploy as an authenticated public server. The Bedrock JWT code decodes claims but does not verify the Login chain's signatures or authenticate a player's identity. WebRTC transport encryption is separate from Login authentication.
 
----
+## Features and limitations
 
-## Features
+- HTTP signaling on TCP `port` (default **19132**) and LAN discovery on UDP **7551**.
+- WebRTC reliable/unreliable data channels handled per connection; Bedrock NetworkSettings, Login parsing, raw-DEFLATE batch handling, and response encoding.
+- Player name and skin data extraction from Login JWT payloads; RGBA skin saved as PNG with a JSON sidecar.
+- Save modes: disabled (`0`), overwrite (`1`), or numbered duplicates (`2`).
+- Colored logs, JSONC configuration, and a protocol-to-version lookup table (currently through **26.60 / 2225**).
+- Not a full game server; cape images and geometry are not saved as separate files.
+- Xbox Live session registration / Microsoft-authenticated server operation is not implemented. The server identity used for signaling is generated on each start rather than persisted.
 
-### ✅ Implemented
+### Data flow
 
-| Category | Feature |
-|----------|---------|
-| **RakNet** | Unconnected Ping/Pong (MOTD with version string) |
-| | Open Connection Request/Reply 1 & 2 |
-| | Connection Request / Connection Request Accepted |
-| | Connected Ping/Pong |
-| | Frame Set packet parsing & reliable-frame splitting |
-| | ACK/NAK handling with retransmission & congestion control |
-| **Bedrock** | `Login` packet reception & parsing (multiple format variants, including new preview protocols) |
-| | zlib raw deflate decompression |
-| | JWT token parsing (chain data extraction) |
-| | Skin data decoding (Base64 → RGBA) |
-| | `NetworkSettings` response sent back to the client |
-| **Skin Extraction** | Player name from JWT chain (xname / ThirdPartyName / displayName) |
-| | Skin data (Base64 RGBA) extraction |
-| | Automatic image dimension detection (64×32, 64×64, 128×64, 128×128) |
-| | PNG generation and output to `skins/` |
-| | JSON metadata sidecar (`{player}_{skinId}.json`) |
-| | Save modes: disabled / overwrite / auto-numbered duplicates |
-| **Infrastructure** | Tokio async runtime for concurrent connections |
-| | Per-client session state management |
-| | External IP discovery via STUN |
-| | C++-style colored logging (tracing framework) |
-| | Protocol → version table with automatic fallback for unknown/newer protocols |
-| | `config.jsonc` (JSONC, comments supported) for configuration |
-| | clap-based CLI with Windows-style `/flag` argument support |
-| **Build** | Cargo cross-platform build |
-| | Windows icon embedding via `build.rs` (`winres`) |
-
-### 🔲 Not Yet Implemented
-
-| Feature | Notes |
-|---------|-------|
-| Encrypted connection support | Required for Xbox Live online sessions |
-| Cape image extraction | Requires additional Bedrock packet handling |
-| Geometry JSON saving | Skin shape/animation metadata |
-| Full game-server functionality | Skin extraction only; clients are disconnected after capture |
-
----
-
-## How It Works
-
-```
-[BE Client connects]
-        │
-        ▼
-[RakNet Handshake]
-  Unconnected Ping → Pong (MOTD + version)
-  OCR1 → OCReply1
-  OCR2 → OCReply2
-  ConnectionRequest → ConnectionRequestAccepted
-  (reliable frames, ACK/NAK + retransmission)
-        │
-        ▼
-[Bedrock Layer]
-  NetworkSettings request → NetworkSettings response (zlib)
-  Login packet received (zlib compressed)
-  Chain Data (JWT) → player name + skin data
-  Base64 RGBA → PNG → skins/{player}_{skinId}.png
-  → skins/{player}_{skinId}.json (metadata sidecar)
-        │
-        ▼
-[Connection Cleanup]
-  Client disconnected / session closed
+```text
+HTTP signaling (TCP port) or LAN discovery (UDP 7551)
+  -> NetherNet WebRTC connection (ICE / DTLS / SCTP)
+  -> RequestNetworkSettings -> uncompressed NetworkSettings
+  -> compressed Bedrock Login -> JWT payloads -> RGBA skin
+  -> skins/<player>_<skinId>.png + .json
+  -> PlayStatus / Disconnect -> session closed
 ```
 
----
+`NetworkSettings` is uncompressed. Once compression is negotiated, Bedrock batches use an algorithm byte (`0` for raw DEFLATE; the reader also accepts `0xff` for uncompressed payloads). NetherNet messages do not use a RakNet `0xfe` header when sent.
 
-## Project Structure
+## Build
 
-```
-src/
-├── main.rs               # Binary entry point (CLI, config, STUN, server loop)
-├── lib.rs                # Library root & public module exports
-├── cli.rs                # clap CLI definitions (--logs, --filter, --debug, ...)
-├── error.rs              # Error types & Result alias
-├── bedrock/              # Minecraft Bedrock protocol
-│   ├── mod.rs           # Re-exports & latest version/protocol lookup
-│   ├── version.rs       # Protocol ↔ version table + fallback for unknown protocols
-│   ├── login.rs         # Login packet parsing & JWT chain/skin extraction
-│   ├── skin.rs          # Skin decode, PNG encoding & save logic (savemode)
-│   ├── batch.rs         # Batch packet handling
-│   └── responses.rs     # Outgoing responses (NetworkSettings, ...)
-├── raknet/               # RakNet protocol implementation
-│   ├── mod.rs           # RakNet structures & configuration
-│   ├── constants.rs     # Packet IDs & constants
-│   ├── protocol.rs      # Frame/datagram types
-│   └── server/          # RakNet server
-│       ├── mod.rs       # Server state, packet routing, resend worker
-│       ├── session.rs   # Per-client session state
-│       ├── handshake.rs # Unconnected PING/PONG, OCR1/2 replies
-│       ├── frames.rs    # Frame set encode/parse, reliability, splitting
-│       └── bedrock.rs   # Bedrock packet handling (login → skin save)
-├── crypto/               # Cryptographic utilities
-│   ├── mod.rs
-│   └── jwt.rs           # JWT parsing & Base64 decoding
-├── network/              # Network abstraction
-│   ├── mod.rs           # Network config & wrapper
-│   └── udp.rs           # UDP socket (async Tokio)
-└── util/                 # Utilities
-    ├── mod.rs
-    ├── buffer.rs        # Binary buffer (little/big endian)
-    ├── config.rs        # config.jsonc load/save & JSONC comment stripping
-    ├── logger.rs        # C++-style colored tracing formatter
-    └── stun.rs          # STUN external IP discovery
-
-build.rs                 # Windows icon embedding
-res/
-└── app.ico              # Windows application icon
-```
-
----
-
-## Building
-
-### Prerequisites
-
-- **Rust**: 1.70 or later (install from [rustup.rs](https://rustup.rs))
-- **Cargo**: Included with Rust
-
-### Windows / Linux / macOS
+Install a recent stable Rust toolchain and Cargo, then run:
 
 ```bash
 cargo build --release
+cargo test --locked
 ```
 
-- Windows output: `target/release/skingetbe.exe` (icon embedded)
-- Linux/macOS output: `target/release/skingetbe`
+The executable is `target/release/skingetbe.exe` on Windows or `target/release/skingetbe` on Linux/macOS. Cargo fetches the NetherNet dependency from GitHub on the first build; a local `vendor/` checkout is **not** needed. The Windows icon is embedded by `build.rs` on Windows.
 
-The `windows` and `winres` dependencies are used **only on Windows**; other platforms build without them.
-
-### Build Options
+## Run
 
 ```bash
-# Debug build (faster compilation, slower runtime)
-cargo build
-
-# Release build (optimized, smaller binary)
-cargo build --release
+cargo run -- --logs 3
+# or run the release executable directly
+./target/release/skingetbe --logs 3
 ```
 
----
+On Windows, use `target\release\skingetbe.exe`. `--logs` sets the level: `0` error, `1` warn, `2` info (default), `3` debug, `4` trace. Without a number, `--logs` selects `3`; `--debug` is an alias. Windows-style `/flag` arguments are also accepted. `--config` is retained for compatibility; configuration is loaded regardless. **`--filter` is parsed but not currently applied to captures.**
 
-## Usage
-
-```
-Usage: skingetbe [OPTIONS]
-
-Options:
-  -c, --config          Enable loading version/protocol from config.jsonc
-                        (default; kept for CLI compatibility)
-      --filter <NAME>   Filter players by name (substring match)
-      --logs [<level>]  Set log level: 0=error, 1=warn, 2=info, 3=debug, 4=trace.
-                        Without a value this enables debug verbosity (3)
-  -d, --debug           Backward-compatible alias for --logs 3
-  -h, --help            Print help
-  -V, --version         Print version
-```
-
-Windows-style `/flag` arguments are also accepted (e.g. `/help`, `/logs 3`).
-
-### Running the Server
-
-```bash
-# Start with default settings (info-level logs)
-./skingetbe
-# or on Windows
-skingetbe.exe
-
-# Debug verbosity
-./skingetbe --logs
-./skingetbe --logs 3
-./skingetbe --debug        # same as --logs 3
-
-# Full trace output
-./skingetbe --logs 4
-
-# Only log errors
-./skingetbe --logs 0
-```
-
-Default log level is `info` (2).
-
-### First Run
-
-On first execution a `config.jsonc` is auto-generated **in the same directory as the binary**:
+On first run, `config.jsonc` is created **next to the executable** (for `cargo run`, under `target/debug/`):
 
 ```jsonc
 {
-  // Minecraft Bedrock version string shown in the server list.
   "version": "1.26.21",
-  // Bedrock protocol number. Keep this aligned with the client version.
   "protocol": 975,
-  // UDP port to listen on.
   "port": 19132,
-  // Local bind address. 0.0.0.0 listens on all network interfaces.
   "bind_addr": "0.0.0.0",
-  // Skin save mode: 0 = do not save, 1 = overwrite, 2 = save as numbered new files.
   "savemode": 2
 }
 ```
 
-**Example paths**:
-- Windows: `C:\path\to\skingetbe.exe` → `C:\path\to\config.jsonc`
-- Linux: `/usr/local/bin/skingetbe` → `/usr/local/bin/config.jsonc`
+| Key | Purpose |
+|-----|---------|
+| `port` | HTTP signaling TCP listen port (default `19132`) |
+| `bind_addr` | Local bind address for signaling and LAN discovery |
+| `protocol`, `version` | Configured Bedrock protocol/version; defaults `975` / `1.26.21` |
+| `savemode` | `0` no files, `1` overwrite, `2` save numbered duplicates |
 
-### Configuration
+JSONC comments are supported. Only a **protocol value of `0`** or an **empty version** is filled from the latest mapping; omitting a key uses the built-in default instead. Other nonempty values are not automatically replaced. **Currently, discovery advertises the latest version from `src/bedrock/version.rs` rather than these config values.** With the defaults above, the startup log shows `975 / 1.26.21`, but discovery advertises `2225 / 26.60`. Edit `config.jsonc` to make the displayed settings match your client; this does not change the current discovery-advertisement behavior.
 
-| Setting | Type | Default | Purpose |
-|---------|------|---------|---------|
-| `port` | int | 19132 | UDP listen port (must be reachable) |
-| `bind_addr` | string | "0.0.0.0" | Bind address (0.0.0.0 = all interfaces) |
-| `protocol` | int | 975 | Bedrock protocol number |
-| `version` | string | "1.26.21" | Version string shown in the server list / MOTD |
-| `savemode` | int | 2 | `0` disables saves, `1` overwrites, `2` auto-numbers duplicates |
-
-JSONC comments are supported. Missing/invalid `protocol`/`version` values are automatically normalized to the latest supported version.
-
-### Connecting from Minecraft
-
-1. Open Minecraft Bedrock Edition → **Play** → **Servers** (or **LAN**)
-2. Add server: `127.0.0.1` (or your machine's IP)
-3. Join — the skin is captured automatically, then the client is disconnected
-4. Check the `skins/` directory for the extracted PNG files
-
-### Output
-
-Skins are saved in the `skins/` directory as PNG + JSON metadata sidecar pairs:
-
-```
-skins/
-├── Steve_Standard_Steve.png
-├── Steve_Standard_Steve.json     ← metadata sidecar
-├── Alex_CustomSkinId.png
-└── Player_AnotherSkin_1.png      ← numbered on duplicates (savemode 2)
-```
-
-### Logging
-
-The colored log format matches the original C++ tool: `[HH:MM:SS] [LEVEL] message`.
-
-| Level | `--logs` value | Output |
-|-------|----------------|--------|
-| error | 0 | Errors only |
-| warn | 1 | + warnings (e.g. unknown protocol fallback) |
-| info | 2 (default) | Startup status, skin-saved messages |
-| debug | 3 | Packet-level details |
-| trace | 4 | Full frames & low-level traces |
-
----
-
-## Configuration
-
-### Bedrock Version Protocol Numbers
-
-`protocol` in `config.jsonc` should match your client version. The full mapping table lives in `src/bedrock/version.rs` and covers every version from 0.14.3 (protocol 70) to the latest:
-
-| Bedrock Version | Protocol | Notes |
-|-----------------|----------|-------|
-| 1.20.0–1.21.0   | 589–685  | 1.20 line |
-| 1.21.2–1.21.50  | 686–766  | 1.21 line |
-| 1.21.60–1.21.124 | 776–860  | 1.21 line |
-| 1.21.130        | 898      | |
-| 1.26.0          | 924      | |
-| 1.26.10         | 944      | |
-| 1.26.21         | 975      | Default / latest known |
-
-Unknown or newer protocols (e.g. preview builds) are not rejected: the server logs a warning (`Unknown Bedrock protocol <N> - falling back to ...`) and continues with the latest known version.
-
----
-
-## Networking Notes
-
-- Listens on UDP (default port **19132**). Make sure the port is open on your firewall and, if connecting over the internet, forwarded on your router.
-- On startup the tool performs a **STUN** request to discover the external IP, which is included in the RakNet handshake.
-- Since no encryption is negotiated, only **offline-mode** clients can connect. This tool cannot function as a legitimate online Bedrock server — it is for research/testing only.
-
----
-
-## Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| **tokio** | Async runtime |
-| **clap** | CLI parsing (derive) |
-| **serde** / **serde_json** | Configuration & metadata serialization |
-| **base64** | Skin data decoding |
-| **flate2** | zlib compression / decompression |
-| **crc32fast** | PNG chunk CRC (PNG encoding is implemented in-house) |
-| **tracing** / **tracing-subscriber** | Structured, colored logging |
-| **chrono** | Timestamps for the log formatter |
-| **once_cell** | Lazy statics (protocol table) |
-| **rand** | GUID generation |
-| **thiserror** / **anyhow** | Error handling |
-| **windows** | Console virtual-terminal support (Windows only) |
-| **winres** | Icon embedding at build time (Windows only) |
-
----
+To connect, select the LAN entry or add the server by its address and signaling port in Bedrock. If Login is successfully parsed, files appear in `skins/` next to the executable, for example `skins/Steve_Standard_Steve.png` and `skins/Steve_Standard_Steve.json`. In mode `2`, duplicates receive suffixes such as `_1`. The client is disconnected after capture.
 
 ## Troubleshooting
 
-### Port Already in Use
+- **Port in use:** `port` is a **TCP** listener, while UDP `7551` is the LAN discovery listener. Both must be free. On Windows, check `Get-NetTCPConnection -LocalPort 19132` and `Get-NetUDPEndpoint -LocalPort 7551`.
+- **Remote clients cannot connect:** allow TCP on the configured signaling port and UDP for LAN discovery (if needed). WebRTC media uses additional UDP sockets allocated by the NetherNet library; forwarding only TCP `19132` is not a guarantee of internet connectivity. LAN connections are the simplest first test.
+- **`Sending NetworkSettings` but no saved skin:** this log only confirms the response was submitted to the transport. Run with `--logs 3` or `--logs 4` and check for batch decompression warnings, Login parsing, and `Detected Player`. Transport connection alone does not mean a skin has been captured.
+- **`Unknown Bedrock protocol`:** `src/bedrock/version.rs` contains a display-name lookup, not a complete version-specific packet implementation. Unknown versions fall back to a display name; this does not ensure Login compatibility.
+- **No files:** check `savemode`, confirm a successful Login, and check the `skins/` directory beside the executable rather than the shell's working directory.
 
-**Error**: `Address already in use`
+## Project layout
 
-**Solution**:
-1. Change `port` in `config.jsonc`
-2. Or find and stop the conflicting process:
-   ```bash
-   # Windows PowerShell
-   Get-NetTCPConnection -LocalPort 19132
-
-   # Linux
-   lsof -i :19132
-   netstat -tlnp | grep 19132
-   ```
-
-### Clients Can't Connect
-
-**Check**:
-1. `port` in config is correct and the server reports it is listening
-2. Firewall allows inbound UDP on the port
-3. Try connecting from the same machine first (`127.0.0.1`)
-4. Use `--logs 3` and look for handshake packets in the output
-
-### Warning "Unknown Bedrock protocol"
-
-The client uses a protocol number that is not in the table. The server automatically falls back to the latest known version (1.26.21 / protocol 975) and continues. Update `protocol` in `config.jsonc` if you want a different target.
-
-### No Skin Saved
-
-Check `savemode` in `config.jsonc`:
-- `0` disables saving entirely
-- `1` overwrites existing files
-- `2` creates numbered files (default)
-
-Also confirm the client actually reached the Login stage (see `--logs 3` output).
-
----
-
-## Development
-
-```bash
-# Run in debug mode with full logging
-cargo run -- --logs 3
-
-# Run tests (library + CLI)
-cargo test
-
-# Format code
-cargo fmt
-
-# Lint
-cargo clippy
-```
-
----
+| Path | Role |
+|------|------|
+| `src/main.rs` | CLI/config startup, NetherNet listeners, Bedrock session handling |
+| `src/bedrock/` | Batch compression, Login parsing, response packets, PNG/JSON saving, version lookup |
+| `src/crypto/jwt.rs` | JWT payload decoding (not signature verification) |
+| `src/util/` | Config, logger, binary buffer and legacy STUN helper |
+| `src/raknet/`, `src/network/` | Retained legacy RakNet/UDP code; not used by the current binary |
 
 ## References
 
-- [Mojang/bedrock-protocol-docs](https://github.com/Mojang/bedrock-protocol-docs)
-- [PrismarineJS/bedrock-protocol](https://github.com/PrismarineJS/bedrock-protocol)
-- [Sandertv/go-raknet](https://github.com/Sandertv/go-raknet)
-- [RakNet Documentation](https://github.com/facebookarchive/RakNet)
-- [wiki.vg/Bedrock Protocol](https://minecraft.wiki/w/Bedrock_Edition_protocol)
-- [Tokio Guide](https://tokio.rs/)
-
----
+- [NetherNet Rust implementation](https://github.com/bedrock-crustaceans/nethernet)
+- [NetherNet specification](https://github.com/df-mc/nethernet-spec)
+- [Mojang Bedrock protocol documentation](https://github.com/Mojang/bedrock-protocol-docs)
 
 ## License
 
 [MIT License](LICENSE)
-
----
-
-## Contributing
-
-Contributions welcome! Areas of interest:
-
-- Test suite expansion (packet-level fixtures)
-- Protocol table updates for new Bedrock releases
-- Cape / geometry extraction
-- Encrypted connection support
-- Performance optimization
-
-Please submit PRs with a description and, where relevant, benchmark comparisons.
