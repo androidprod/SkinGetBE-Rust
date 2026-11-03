@@ -1,12 +1,12 @@
 //! Configuration management for SkinGetBE
 
+use crate::util::Logger;
 use crate::{bedrock, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use tracing::info;
 
 /// Server configuration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,7 +62,10 @@ impl ConfigManager {
 
         // Check if config file exists
         if self.config_path.exists() {
-            info!("Loading config from: {}", self.config_path.display());
+            Logger::status_text(format!(
+                "Loading config from: {}",
+                self.config_path.display()
+            ));
             let content = fs::read_to_string(&self.config_path)?;
             let stripped = strip_json_comments(&content);
             let mut config: Config = serde_json::from_str(&stripped)?;
@@ -74,7 +77,10 @@ impl ConfigManager {
             Ok(config)
         } else {
             // Create default config
-            info!("Creating default config at: {}", self.config_path.display());
+            Logger::status_text(format!(
+                "Creating default config at: {}",
+                self.config_path.display()
+            ));
             let config = Config::default();
             self.save(&config)?;
             Ok(config)
@@ -90,7 +96,7 @@ impl ConfigManager {
 
         let content = format_config_with_comments(config);
         fs::write(&self.config_path, content)?;
-        info!("Config saved to: {}", self.config_path.display());
+        Logger::status_text(format!("Config saved to: {}", self.config_path.display()));
         Ok(())
     }
 
@@ -102,7 +108,10 @@ impl ConfigManager {
         let version_empty = config.version.trim().is_empty();
 
         if protocol_missing || version_empty {
-            info!("Config missing version/protocol, filling defaults from latest supported");
+            Logger::status_text(
+                "Config missing version/protocol, filling defaults from latest supported"
+                    .to_string(),
+            );
             return Config {
                 version: if version_empty {
                     latest_version
@@ -122,7 +131,9 @@ impl ConfigManager {
 
         let mut normalized = config.clone();
         if normalized.savemode > 2 {
-            info!("Config savemode out of range, using numbered-save mode (2)");
+            Logger::status_text(
+                "Config savemode out of range, using numbered-save mode (2)".to_string(),
+            );
             normalized.savemode = 2;
         }
         normalized

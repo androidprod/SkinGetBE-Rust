@@ -59,6 +59,11 @@ static PROTOCOL_MAP: Lazy<HashMap<u32, &'static str>> = Lazy::new(|| {
     m.insert(924, "1.26.0");
     m.insert(944, "1.26.10");
     m.insert(975, "1.26.21");
+    m.insert(1001, "26.35");
+    m.insert(2168, "26.44");
+    m.insert(2169, "26.45");
+    m.insert(2193, "26.52");
+    m.insert(2225, "26.60");
     m
 });
 

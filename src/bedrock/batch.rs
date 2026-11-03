@@ -1,18 +1,22 @@
 //! Bedrock batch packet handling and decompression
 
 use crate::Result;
-use flate2::{write::DeflateEncoder, Compression};
+use flate2::{
+    read::{DeflateDecoder, ZlibDecoder},
+    write::DeflateEncoder,
+    Compression,
+};
 use std::io::{Read, Write};
 
 // Maximum allowed decompressed batch size to avoid OOM from malformed input
 const MAX_DECOMPRESSED_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
-fn decompress_raw_deflate(data: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = flate2::read::DeflateDecoder::new(data);
+fn read_bounded(decoder: impl Read) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     decoder
+        .take((MAX_DECOMPRESSED_SIZE + 1) as u64)
         .read_to_end(&mut out)
-        .map_err(|e| crate::Error::Other(format!("raw deflate decode failed: {}", e)))?;
+        .map_err(|e| crate::Error::Other(format!("batch decompression failed: {}", e)))?;
 
     if out.len() > MAX_DECOMPRESSED_SIZE {
         return Err(crate::Error::Other(format!(
@@ -22,6 +26,26 @@ fn decompress_raw_deflate(data: &[u8]) -> Result<Vec<u8>> {
     }
 
     Ok(out)
+}
+
+fn decompress_raw_deflate(data: &[u8]) -> Result<Vec<u8>> {
+    read_bounded(DeflateDecoder::new(data))
+}
+
+fn decompress_zlib(data: &[u8]) -> Result<Vec<u8>> {
+    read_bounded(ZlibDecoder::new(data))
+}
+
+fn decompress_compressed_payload(data: &[u8]) -> Result<Vec<u8>> {
+    // Bedrock uses a one-byte compression algorithm after negotiation.
+    // 0 = raw DEFLATE (not a zlib-wrapped stream), 0xff = no compression.
+    // Accept a zlib wrapper for compatibility with older peers.
+    match data.split_first() {
+        Some((0, payload)) => decompress_raw_deflate(payload).or_else(|_| decompress_zlib(payload)),
+        Some((0xff, payload)) if payload.len() <= MAX_DECOMPRESSED_SIZE => Ok(payload.to_vec()),
+        Some((0xff, _)) => Err(crate::Error::InvalidData("batch too large".into())),
+        _ => decompress_raw_deflate(data).or_else(|_| decompress_zlib(data)),
+    }
 }
 
 /// Decompress a batch packet using appropriate algorithm
@@ -38,36 +62,33 @@ pub fn decompress_batch(data: &[u8], compression_enabled: bool) -> Result<Vec<u8
         return Ok(data.to_vec());
     }
 
-    let payload = match data.split_first() {
-        Some((0x00, rest)) => rest,
-        Some((0xFF, rest)) => return Ok(rest.to_vec()),
-        _ => data,
-    };
-
-    let decompressed = decompress_raw_deflate(payload)?;
+    let decompressed = decompress_compressed_payload(data)?;
     tracing::debug!(
         "batch decompressed {} -> {} bytes",
-        payload.len(),
+        data.len(),
         decompressed.len()
     );
     Ok(decompressed)
 }
 
-/// Compress batch data as Bedrock raw-deflate stream prefixed with algorithm 0x00.
+/// Compress batch data using raw DEFLATE with the Bedrock algorithm byte.
+///
+/// The returned payload includes the compression algorithm byte (`0` for
+/// raw DEFLATE). NetherNet does not use the RakNet `0xfe` batch marker.
 pub fn compress_batch(data: &[u8]) -> Result<Vec<u8>> {
     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::new(7));
     encoder
         .write_all(data)
-        .map_err(|e| crate::Error::Other(format!("zlib encode error: {}", e)))?;
+        .map_err(|e| crate::Error::Other(format!("deflate encode error: {}", e)))?;
 
     let compressed = encoder
         .finish()
-        .map_err(|e| crate::Error::Other(format!("zlib finish error: {}", e)))?;
+        .map_err(|e| crate::Error::Other(format!("deflate finish error: {}", e)))?;
 
-    let mut out = Vec::with_capacity(compressed.len() + 1);
-    out.push(0x00);
-    out.extend_from_slice(&compressed);
-    Ok(out)
+    let mut payload = Vec::with_capacity(compressed.len() + 1);
+    payload.push(0); // PacketCompressionAlgorithm::ZLib (raw DEFLATE stream)
+    payload.extend_from_slice(&compressed);
+    Ok(payload)
 }
 
 /// Parse batch packets from decompressed data
@@ -192,16 +213,44 @@ mod tests {
     }
 
     #[test]
-    fn test_decompress_algo_00_requires_raw_deflate_payload() {
-        let data = vec![0x00, 0xDE, 0xAD, 0xBE, 0xEF];
+    fn test_decompress_invalid_zlib_payload() {
+        let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let out = decompress_batch(&data, true);
         assert!(out.is_err());
     }
 
     #[test]
-    fn test_decompress_algo_ff_uncompressed() {
-        let data = vec![0xFF, 0x01, 0x02, 0x03];
+    fn test_decompress_raw_deflate_payload() {
+        let data = compress_batch(&[0x01, 0x02, 0x03]).unwrap();
         let out = decompress_batch(&data, true).unwrap();
         assert_eq!(out, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_decompress_legacy_prefixless_deflate_payload() {
+        let prefixed = compress_batch(&[0x01, 0x02, 0x03]).unwrap();
+        let out = decompress_batch(&prefixed[1..], true).unwrap();
+        assert_eq!(out, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_decompress_uncompressed_payload_after_negotiation() {
+        assert_eq!(
+            decompress_batch(&[0xff, 0x01, 0x02], true).unwrap(),
+            [0x01, 0x02]
+        );
+    }
+
+    #[test]
+    fn test_decompress_zlib_wrapped_legacy_payload() {
+        use flate2::write::ZlibEncoder;
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&[0x01, 0x02, 0x03]).unwrap();
+        let mut payload = vec![0];
+        payload.extend(encoder.finish().unwrap());
+        assert_eq!(
+            decompress_batch(&payload, true).unwrap(),
+            [0x01, 0x02, 0x03]
+        );
     }
 }

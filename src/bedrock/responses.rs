@@ -28,7 +28,7 @@ pub fn build_disconnect(reason: i32, message: &str) -> Vec<u8> {
 pub fn build_network_settings() -> Vec<u8> {
     let mut buf = Buffer::new();
     let _ = buf.write_var_int(0x8f); // NetworkSettings packet ID (VarInt encoded)
-    let _ = buf.write_u16_le(1); // compression threshold (LE short)
+    let _ = buf.write_u16_le(1); // compress batches of 1 byte or larger
     let _ = buf.write_u16_le(0); // compression algorithm (0 = zlib)
     let _ = buf.write_bool(false); // client throttle enabled
     let _ = buf.write_u8(0); // client throttle threshold

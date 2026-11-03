@@ -149,7 +149,12 @@ impl Logger {
     }
 
     pub fn status(label: impl fmt::Display, value: impl fmt::Display) {
-        tracing::info!("{:>16}: {}", label, value);
+        tracing::info!("{}: {}", label, value);
+    }
+
+    /// Emit a status-style line for prose messages.
+    pub fn status_text(message: impl fmt::Display) {
+        tracing::info!("{}", message);
     }
 }
 
