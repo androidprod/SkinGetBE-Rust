@@ -1473,6 +1473,7 @@ dependencies = [
 [[package]]
 name = "nethernet"
 version = "0.0.1"
+source = "git+https://github.com/bedrock-crustaceans/nethernet#1963dbaf172c8823617d28598a08b99d2d539e56"
 dependencies = [
  "aes 0.9.4",
  "base64 0.23.1",

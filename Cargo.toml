@@ -43,9 +43,6 @@ rand = "0.8"
 # NetherNet transport
 nethernet-tokio = { git = "https://github.com/bedrock-crustaceans/nethernet", package = "nethernet-tokio" }
 
-[patch."https://github.com/bedrock-crustaceans/nethernet"]
-nethernet = { path = "vendor/nethernet-upstream/nethernet" }
-
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Console"] }
 
